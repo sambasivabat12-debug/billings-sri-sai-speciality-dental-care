@@ -3,8 +3,8 @@
  * Strategy: Cache-first for app shell, network-first for CDN libs
  */
 
-const CACHE_NAME = 'srisai-dental-v1';
-const CDN_CACHE  = 'srisai-cdn-v1';
+const CACHE_NAME = 'srisai-dental-v2';
+const CDN_CACHE  = 'srisai-cdn-v2';
 
 // Core app shell files (always cache)
 const APP_SHELL = [
