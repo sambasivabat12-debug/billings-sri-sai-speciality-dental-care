@@ -1633,6 +1633,15 @@ Kharmanghat
                     <!-- KPI CARDS ROW -->
                     <div id="rpt_kpis" style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:24px;"></div>
 
+                    <!-- TREATMENT REVENUE PANEL -->
+                    <div style="background:white;border-radius:10px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,0.07);margin-bottom:20px;border-top:4px solid #8e44ad;">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+                            <div style="font-weight:700;font-size:15px;color:#8e44ad;">🦷 Treatment Revenue Breakdown</div>
+                            <button onclick="generateTreatmentReport()" style="padding:6px 14px;background:#8e44ad;color:white;border:none;border-radius:6px;font-size:12px;cursor:pointer;">⬇ CSV</button>
+                        </div>
+                        <div id="rpt_treatment_revenue_table"></div>
+                    </div>
+
                     <!-- CHARTS ROW 1: Revenue trend + Treatment mix -->
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px;">
                         <div style="background:white;border-radius:10px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,0.07);">
@@ -5303,8 +5312,32 @@ Thank you! Visit again.`;
         // ══ CLINIC PERFORMANCE REPORTS ═══════════════════════════
 
         // Called whenever the Reports page is opened or filter changes
+        var _trReceiptsCache = null;
+
         function renderReports() {
             const filtered = getFilteredBills();
+            if (typeof CONFIG !== 'undefined' && CONFIG.apiUrl && !CONFIG.apiUrl.includes('YOUR_WEB_APP')) {
+                const params = new URLSearchParams();
+                params.append('action', 'getTreatmentReceipts');
+                fetch(CONFIG.apiUrl + '?' + params.toString(), { method: 'GET', redirect: 'follow' })
+                    .then(r => r.json())
+                    .then(result => {
+                        if (result.success && Array.isArray(result.data)) {
+                            const local = (() => { try { return JSON.parse(localStorage.getItem('tr_history') || '[]'); } catch(e) { return []; } })();
+                            const sheetKeys = new Set(result.data.map(r => (r.no||'') + '|' + (r.date||'') + '|' + (r.patient||'')));
+                            const localOnly = local.filter(r => !sheetKeys.has((r.no||'') + '|' + (r.date||'') + '|' + (r.patient||'')));
+                            _trReceiptsCache = [...result.data, ...localOnly];
+                        } else { _trReceiptsCache = null; }
+                        _renderReportsAll(filtered);
+                    })
+                    .catch(() => { _trReceiptsCache = null; _renderReportsAll(filtered); });
+            } else {
+                _trReceiptsCache = null;
+                _renderReportsAll(filtered);
+            }
+        }
+
+        function _renderReportsAll(filtered) {
             renderKPIs(filtered);
             renderRevenueChart(filtered);
             renderTreatmentChart();
@@ -5351,27 +5384,69 @@ Thank you! Visit again.`;
             });
         }
 
+        function getFilteredTreatmentReceipts() {
+            const period = document.getElementById('rpt_period') ? document.getElementById('rpt_period').value : 'all';
+            const now = new Date();
+            const today = now.toISOString().split('T')[0];
+            let saved = [];
+            if (_trReceiptsCache && _trReceiptsCache.length) {
+                saved = _trReceiptsCache;
+            } else {
+                try { saved = JSON.parse(localStorage.getItem('tr_history') || '[]'); } catch(e) {}
+            }
+            return saved.filter(r => {
+                const d = String(r.date||'').split('T')[0];
+                if (!d) return period === 'all';
+                if (period === 'all') return true;
+                if (period === 'today') return d === today;
+                if (period === 'week') {
+                    const wStart = new Date(now); wStart.setDate(now.getDate() - now.getDay());
+                    return new Date(d) >= wStart;
+                }
+                if (period === 'month') return d.substring(0,7) === today.substring(0,7);
+                if (period === 'last3') { const t = new Date(now); t.setMonth(t.getMonth()-3); return new Date(d) >= t; }
+                if (period === 'year') return d.substring(0,4) === today.substring(0,4);
+                if (period === 'custom') {
+                    const from = document.getElementById('rpt_from') ? document.getElementById('rpt_from').value : '';
+                    const to   = document.getElementById('rpt_to')   ? document.getElementById('rpt_to').value   : '';
+                    if (from && d < from) return false;
+                    if (to   && d > to)   return false;
+                    return true;
+                }
+                return true;
+            });
+        }
+
         function renderKPIs(filtered) {
             const totalRev  = filtered.reduce((s,b) => s + (parseFloat(b.total)||0), 0);
             const totalPts  = filtered.length;
             const avgBill   = totalPts ? totalRev / totalPts : 0;
             const totalDisc = filtered.reduce((s,b) => s + (parseFloat(b.discount)||0), 0);
-
-            // Unique patient names
             const uniquePts = new Set(filtered.map(b => (b.patientName||'').toLowerCase().trim())).size;
-
-            // Bills today
             const today = new Date().toISOString().split('T')[0];
             const todayRev = bills.filter(b => String(b.date).split('T')[0] === today)
                                   .reduce((s,b) => s + (parseFloat(b.total)||0), 0);
 
+            const trFiltered = getFilteredTreatmentReceipts();
+            const trRevenue  = trFiltered.reduce((s,r) => s + (parseFloat(r.amount)||0), 0);
+            const trCount    = trFiltered.length;
+            const trAvg      = trCount ? trRevenue / trCount : 0;
+            const trToday    = (() => {
+                let src = (_trReceiptsCache && _trReceiptsCache.length) ? _trReceiptsCache : (() => { try { return JSON.parse(localStorage.getItem('tr_history') || '[]'); } catch(e) { return []; } })();
+                return src.filter(r => String(r.date||'').split('T')[0] === today).reduce((s,r) => s + (parseFloat(r.amount)||0), 0);
+            })();
+            const combinedRev = totalRev + trRevenue;
+
             const kpis = [
-                { label:"Total Revenue",   value:`₹${totalRev.toLocaleString('en-IN',{maximumFractionDigits:0})}`,  color:'#2c5aa0', icon:'💰' },
-                { label:"Total Bills",     value:totalPts,                       color:'#27ae60', icon:'🧾' },
-                { label:"Unique Patients", value:uniquePts,                      color:'#8e44ad', icon:'👥' },
-                { label:"Avg Bill Value",  value:`₹${avgBill.toFixed(0)}`,       color:'#e67e22', icon:'📊' },
-                { label:"Total Discounts", value:`₹${totalDisc.toFixed(0)}`,     color:'#e74c3c', icon:'🏷️' },
-                { label:"Today's Revenue", value:`₹${todayRev.toFixed(0)}`,      color:'#16a085', icon:'📅' },
+                { label:"Pharmacy Revenue",      value:`₹${totalRev.toLocaleString('en-IN',{maximumFractionDigits:0})}`,    color:'#2c5aa0', icon:'💊' },
+                { label:"Treatment Revenue",     value:`₹${trRevenue.toLocaleString('en-IN',{maximumFractionDigits:0})}`,   color:'#8e44ad', icon:'🦷' },
+                { label:"Combined Revenue",      value:`₹${combinedRev.toLocaleString('en-IN',{maximumFractionDigits:0})}`, color:'#16a085', icon:'💰' },
+                { label:"Treatment Receipts",    value:trCount,                                                               color:'#e67e22', icon:'🧾' },
+                { label:"Avg Treatment Value",   value:`₹${trAvg.toFixed(0)}`,                                               color:'#27ae60', icon:'📊' },
+                { label:"Today's Treatment Rev", value:`₹${trToday.toFixed(0)}`,                                             color:'#e74c3c', icon:'📅' },
+                { label:"Pharmacy Bills",        value:totalPts,                                                              color:'#2c5aa0', icon:'🧾' },
+                { label:"Unique Patients",       value:uniquePts,                                                             color:'#8e44ad', icon:'👥' },
+                { label:"Total Discounts",       value:`₹${totalDisc.toFixed(0)}`,                                           color:'#95a5a6', icon:'🏷️' },
             ];
 
             document.getElementById('rpt_kpis').innerHTML = kpis.map(k => `
@@ -5380,6 +5455,60 @@ Thank you! Visit again.`;
                     <div style="font-size:11px;color:#7f8c8d;text-transform:uppercase;letter-spacing:0.5px;">${k.label}</div>
                     <div style="font-size:22px;font-weight:800;color:${k.color};margin-top:3px;">${k.value}</div>
                 </div>`).join('');
+
+            renderTreatmentRevenueTable(trFiltered);
+        }
+
+        function renderTreatmentRevenueTable(trFiltered) {
+            const el = document.getElementById('rpt_treatment_revenue_table');
+            if (!el) return;
+            if (!trFiltered.length) {
+                el.innerHTML = '<div style="color:#aaa;font-size:13px;text-align:center;padding:20px;">No treatment receipts for this period.</div>';
+                return;
+            }
+            const byType = {};
+            trFiltered.forEach(r => {
+                const amt = parseFloat(r.amount) || 0;
+                const types = String(r.treatments || r.treatmentText || 'Other').split(',');
+                types.forEach(t => {
+                    const key = t.trim() || 'Other';
+                    if (!byType[key]) byType[key] = { count:0, total:0 };
+                    byType[key].count++;
+                    byType[key].total += amt / types.length;
+                });
+            });
+            const totalTr = trFiltered.reduce((s,r) => s + (parseFloat(r.amount)||0), 0);
+            const rows = Object.entries(byType).sort((a,b) => b[1].total - a[1].total).map(([type, stat]) => {
+                const pct = totalTr > 0 ? ((stat.total / totalTr) * 100).toFixed(1) : 0;
+                const barW = Math.round(Math.min(pct, 100));
+                return `<tr>
+                    <td style="padding:8px 10px;border-bottom:1px solid #f0f0f0;font-size:13px;">${type}</td>
+                    <td style="padding:8px 10px;border-bottom:1px solid #f0f0f0;font-size:13px;text-align:center;">${stat.count}</td>
+                    <td style="padding:8px 10px;border-bottom:1px solid #f0f0f0;font-size:13px;text-align:right;font-weight:600;color:#8e44ad;">₹${stat.total.toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
+                    <td style="padding:8px 10px;border-bottom:1px solid #f0f0f0;font-size:13px;">
+                        <div style="display:flex;align-items:center;gap:6px;">
+                            <div style="background:#e8d5f5;border-radius:4px;height:8px;flex:1;max-width:80px;">
+                                <div style="background:#8e44ad;border-radius:4px;height:8px;width:${barW}%;"></div>
+                            </div>
+                            <span style="font-size:11px;color:#8e44ad;min-width:32px;">${pct}%</span>
+                        </div>
+                    </td>
+                </tr>`;
+            }).join('');
+            el.innerHTML = `<table style="width:100%;border-collapse:collapse;">
+                <thead><tr style="background:#f8f0ff;">
+                    <th style="padding:9px 10px;text-align:left;font-size:12px;color:#6c3483;font-weight:700;">Treatment</th>
+                    <th style="padding:9px 10px;text-align:center;font-size:12px;color:#6c3483;font-weight:700;">Count</th>
+                    <th style="padding:9px 10px;text-align:right;font-size:12px;color:#6c3483;font-weight:700;">Revenue</th>
+                    <th style="padding:9px 10px;font-size:12px;color:#6c3483;font-weight:700;">Share</th>
+                </tr></thead>
+                <tbody>${rows}</tbody>
+                <tfoot><tr style="background:#f0e5ff;">
+                    <td colspan="2" style="padding:9px 10px;font-size:13px;font-weight:700;color:#6c3483;">Total · ${trFiltered.length} receipts</td>
+                    <td style="padding:9px 10px;text-align:right;font-size:15px;font-weight:800;color:#8e44ad;">₹${totalTr.toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
+                    <td style="padding:9px 10px;font-size:12px;color:#8e44ad;">100%</td>
+                </tr></tfoot>
+            </table>`;
         }
 
         function renderRevenueChart(filtered) {
@@ -5966,16 +6095,36 @@ Thank you! Visit again.`;
         }
 
         function generateTreatmentReport() {
-            // Export treatment receipts log — reads from tr_history (same key as printTreatmentReceipt)
+            if (typeof CONFIG !== 'undefined' && CONFIG.apiUrl && !CONFIG.apiUrl.includes('YOUR_WEB_APP')) {
+                showToast('⏳ Fetching all records from Sheets…', 'info');
+                const params = new URLSearchParams();
+                params.append('action', 'getTreatmentReceipts');
+                fetch(CONFIG.apiUrl + '?' + params.toString(), { method: 'GET', redirect: 'follow' })
+                    .then(r => r.json())
+                    .then(result => {
+                        let sheetsRows = (result.success && Array.isArray(result.data)) ? result.data : [];
+                        const local = (() => { try { return JSON.parse(localStorage.getItem('tr_history') || '[]'); } catch(e) { return []; } })();
+                        const sheetKeys = new Set(sheetsRows.map(r => (r.no||'') + '|' + (r.date||'') + '|' + (r.patient||'')));
+                        const localOnly = local.filter(r => !sheetKeys.has((r.no||'') + '|' + (r.date||'') + '|' + (r.patient||'')));
+                        const all = [...sheetsRows, ...localOnly];
+                        if (!all.length) { showToast('No treatment receipts found', 'warning'); return; }
+                        let csv = 'Receipt No,Date,Patient,Amount,Treatments\n';
+                        all.forEach(r => { csv += `"${r.no||''}","${r.date||''}","${r.patient||''}","${r.amount||''}","${r.treatments||r.treatmentText||''}"\n`; });
+                        downloadReport(csv, 'Treatment-Receipts-Report.csv');
+                        showToast('✅ Treatment report downloaded (' + all.length + ' records)!', 'success');
+                    })
+                    .catch(() => _generateTreatmentReportLocal());
+            } else { _generateTreatmentReportLocal(); }
+        }
+
+        function _generateTreatmentReportLocal() {
             try {
                 const saved = JSON.parse(localStorage.getItem('tr_history') || '[]');
                 if (!saved.length) { showToast('No treatment receipts saved yet', 'warning'); return; }
                 let csv = 'Receipt No,Date,Patient,Amount,Treatments\n';
-                saved.forEach(r => {
-                    csv += `"${r.no||''}","${r.date||''}","${r.patient||''}","${r.amount||''}","${r.treatments||''}"\n`;
-                });
+                saved.forEach(r => { csv += `"${r.no||''}","${r.date||''}","${r.patient||''}","${r.amount||''}","${r.treatments||r.treatmentText||''}"\n`; });
                 downloadReport(csv, 'Treatment-Receipts-Report.csv');
-                showToast('✅ Treatment report downloaded!', 'success');
+                showToast('✅ Treatment report downloaded (' + saved.length + ' records — local only)!', 'success');
             } catch(e) { showToast('No treatment data found', 'warning'); }
         }
 
